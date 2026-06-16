@@ -1,19 +1,24 @@
 import cv2
 import time
-from collections import defaultdict
+from collections import defaultdict, deque, Counter
 from datetime import datetime
 from deepface import DeepFace
 
-# ---------------------------
+# =====================================================
 # SETTINGS
-# ---------------------------
+# =====================================================
 
 CAMERA_INDEX = 0
-ANALYZE_EVERY_N_FRAMES = 15
 
-# ---------------------------
+ANALYZE_EVERY_N_FRAMES =10
+
+SMOOTHING_WINDOW = 5
+
+CONFIDENCE_THRESHOLD = 30
+
+# =====================================================
 # INIT
-# ---------------------------
+# =====================================================
 
 cap = cv2.VideoCapture(CAMERA_INDEX)
 
@@ -22,23 +27,28 @@ face_cascade = cv2.CascadeClassifier(
     "haarcascade_frontalface_default.xml"
 )
 
-current_emotion = "Detecting..."
-current_confidence = 0.0
+frame_count = 0
+
 emotion_scores = {}
 
-emotion_counts = defaultdict(int)
+current_emotion = "Detecting"
+current_confidence = 0
 
-frame_count = 0
+stable_emotion = "Detecting"
+
+emotion_history = deque(maxlen=SMOOTHING_WINDOW)
+
+emotion_counts = defaultdict(int)
 
 fps = 0
 prev_time = time.time()
 
-print("Press ESC to quit")
-print("Press S to save screenshot")
+print("ESC = Exit")
+print("S = Save Screenshot")
 
-# ---------------------------
+# =====================================================
 # MAIN LOOP
-# ---------------------------
+# =====================================================
 
 while True:
 
@@ -49,48 +59,91 @@ while True:
 
     frame_count += 1
 
+    # -------------------------
     # FPS
+    # -------------------------
+
     current_time = time.time()
-    fps = 1 / (current_time - prev_time)
+
+    fps = 1 / max(
+        current_time - prev_time,
+        1e-6
+    )
+
     prev_time = current_time
+
+    # -------------------------
+    # EMOTION ANALYSIS
+    # -------------------------
 
     try:
 
         if frame_count % ANALYZE_EVERY_N_FRAMES == 0:
 
+            result = DeepFace.analyze(
+                frame,
+                actions=["emotion"],
+                enforce_detection=False,
+                silent=True
+            )
+
             # result = DeepFace.analyze(
             #     frame,
             #     actions=["emotion"],
+            #     detector_backend="opencv",
             #     enforce_detection=False,
             #     silent=True
             # )
-
-            result = DeepFace.analyze(
-                    frame,
-                    actions=["emotion"],
-                    detector_backend="opencv",
-                    enforce_detection=False,
-                    silent=True
-                    )
 
             result = result[0]
 
             emotion_scores = result["emotion"]
 
-            current_emotion = result["dominant_emotion"]
+            scores = result["emotion"]
+
+            scores.pop("fear", None)
+            scores.pop("disgust", None)
+
+            current_emotion = max(
+                scores,
+                key=scores.get
+            )
+
+            current_confidence = scores[current_emotion]
 
             current_confidence = emotion_scores[current_emotion]
 
-            emotion_counts[current_emotion] += 1
+            # confidence filtering
+
+            if current_confidence >= CONFIDENCE_THRESHOLD:
+
+                emotion_history.append(
+                    current_emotion
+                )
+
+                stable_emotion = Counter(
+                    emotion_history
+                ).most_common(1)[0][0]
+
+                emotion_counts[
+                    stable_emotion
+                ] += 1
+
+            else:
+
+                stable_emotion = "Uncertain"
 
     except Exception as e:
-        print(e)
+        print("Analysis error:", e)
 
-    # ---------------------------
+    # -------------------------
     # FACE DETECTION
-    # ---------------------------
+    # -------------------------
 
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray = cv2.cvtColor(
+        frame,
+        cv2.COLOR_BGR2GRAY
+    )
 
     faces = face_cascade.detectMultiScale(
         gray,
@@ -109,22 +162,21 @@ while True:
         )
 
         label = (
-            f"{current_emotion.upper()} "
+            f"{stable_emotion.upper()} "
             f"({current_confidence:.1f}%)"
         )
 
-        # black background for text
         (tw, th), _ = cv2.getTextSize(
             label,
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
+            0.75,
             2
         )
 
         cv2.rectangle(
             frame,
-            (x, y - 35),
-            (x + tw + 10, y),
+            (x, y - 40),
+            (x + tw + 15, y),
             (0, 0, 0),
             -1
         )
@@ -132,75 +184,99 @@ while True:
         cv2.putText(
             frame,
             label,
-            (x + 5, y - 10),
+            (x + 5, y - 12),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
+            0.75,
             (0, 255, 0),
             2
         )
 
-    # ---------------------------
-    # SIDE PANEL
-    # ---------------------------
+    # -------------------------
+    # LEFT INFO PANEL
+    # -------------------------
 
     overlay = frame.copy()
 
     cv2.rectangle(
         overlay,
         (0, 0),
-        (250, 600),
+        (200, 500),
         (0, 0, 0),
         -1
     )
 
-    alpha = 0.45
-
     cv2.addWeighted(
         overlay,
-        alpha,
+        0.75,
         frame,
-        1 - alpha,
+        0.25,
         0,
         frame
     )
 
     y = 30
 
-    def draw(text, y_pos, scale=0.6):
+    def draw(text, ypos, scale=0.6):
+
         cv2.putText(
             frame,
             text,
-            (10, y_pos),
+            (10, ypos),
             cv2.FONT_HERSHEY_SIMPLEX,
             scale,
             (255, 255, 255),
             2
         )
 
-    draw("REAL-TIME EMOTION DETECTION", y)
-    y += 35
+    draw(
+        "REAL-TIME EMOTION DETECTION",
+        y,
+        0.7
+    )
 
-    draw(f"Current: {current_emotion}", y)
+    y += 40
+
+    draw(
+        f"Current : {current_emotion}",
+        y
+    )
+
     y += 30
 
-    draw(f"Confidence: {current_confidence:.1f}%", y)
+    draw(
+        f"Stable  : {stable_emotion}",
+        y
+    )
+
     y += 30
 
-    draw(f"FPS: {fps:.1f}", y)
+    draw(
+        f"Confidence : {current_confidence:.1f}%",
+        y
+    )
+
+    y += 30
+
+    draw(
+        f"FPS : {fps:.1f}",
+        y
+    )
+
     y += 40
 
     draw("TOP EMOTIONS", y)
+
     y += 30
 
     if emotion_scores:
 
-        top_emotions = sorted(
+        top5 = sorted(
             emotion_scores.items(),
             key=lambda x: x[1],
             reverse=True
         )[:5]
 
-        for emotion, score in top_emotions:
+        for emotion, score in top5:
 
             draw(
                 f"{emotion:<10} {score:.1f}%",
@@ -212,20 +288,23 @@ while True:
 
     y += 20
 
-    draw("SESSION STATS", y)
+    draw("SESSION SUMMARY", y)
+
     y += 30
 
-    total = sum(emotion_counts.values())
+    total = sum(
+        emotion_counts.values()
+    )
 
     if total > 0:
 
-        session_top = max(
+        session_mood = max(
             emotion_counts,
             key=emotion_counts.get
         )
 
         draw(
-            f"Session Mood: {session_top}",
+            f"Dominant: {session_mood}",
             y
         )
 
@@ -235,9 +314,11 @@ while True:
             emotion_counts.items(),
             key=lambda x: x[1],
             reverse=True
-        )[:5]:
+        ):
 
-            pct = 100 * count / total
+            pct = (
+                count / total
+            ) * 100
 
             draw(
                 f"{emotion}: {pct:.1f}%",
@@ -247,9 +328,9 @@ while True:
 
             y += 25
 
-    # ---------------------------
+    # -------------------------
     # DISPLAY
-    # ---------------------------
+    # -------------------------
 
     cv2.imshow(
         "Real-Time Affective State Monitoring",
@@ -259,14 +340,16 @@ while True:
     key = cv2.waitKey(1) & 0xFF
 
     # ESC
+
     if key == 27:
         break
 
-    # S -> save screenshot
+    # Screenshot
+
     elif key == ord('s'):
 
         filename = (
-            f"{current_emotion}_"
+            f"{stable_emotion}_"
             f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
         )
 
@@ -276,12 +359,13 @@ while True:
         )
 
         print(
-            f"Saved screenshot: {filename}"
+            f"Saved: {filename}"
         )
 
-# ---------------------------
+# =====================================================
 # CLEANUP
-# ---------------------------
+# =====================================================
 
 cap.release()
 cv2.destroyAllWindows()
+
