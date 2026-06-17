@@ -10,7 +10,7 @@ from deepface import DeepFace
 
 CAMERA_INDEX = 0
 
-ANALYZE_EVERY_N_FRAMES =10
+ANALYZE_EVERY_N_FRAMES = 5
 
 SMOOTHING_WINDOW = 5
 
@@ -79,21 +79,23 @@ while True:
     try:
 
         if frame_count % ANALYZE_EVERY_N_FRAMES == 0:
-
-            result = DeepFace.analyze(
-                frame,
-                actions=["emotion"],
-                enforce_detection=False,
-                silent=True
-            )
+            
+            frame = cv2.resize(frame, (640, 480))
 
             # result = DeepFace.analyze(
             #     frame,
             #     actions=["emotion"],
-            #     detector_backend="opencv",
             #     enforce_detection=False,
             #     silent=True
             # )
+
+            result = DeepFace.analyze(
+                frame,
+                actions=["emotion"],
+                detector_backend="opencv",
+                enforce_detection=False,
+                silent=True
+            )
 
             result = result[0]
 
